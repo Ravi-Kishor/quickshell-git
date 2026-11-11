@@ -148,7 +148,7 @@ jobs:
               wayland
             )
             optdepends=('qt6-svg: svg images and icons')
-            provides=(libdux-qt-base.so)
+            provides=(quickshell)
             conflicts=(dux-qt-base-git dux-qt-base-git-devel dux-qt-base-bin)
             replaces=(dux-qt-base-git dux-qt-base-git-devel)
 
