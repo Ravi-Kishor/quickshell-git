@@ -1,4 +1,4 @@
-name: Build dux-qt-base-git
+name: Build dux-qt-base
 
 permissions:
   contents: write
@@ -25,7 +25,7 @@ jobs:
       - name: Update system
         run: |
           pacman -Syu --noconfirm
-          pacman -S --noconfirm base-devel git curl sudo
+          pacman -S --noconfirm base-devel git curl sudo github-cli zstd
 
       # -------------------------
       # Install dependencies
@@ -56,15 +56,14 @@ jobs:
         run: |
           mkdir -p /home/builder/pkg
           cat > /home/builder/pkg/PKGBUILD <<'EOF'
-          pkgbase=dux-qt-base-git
-          pkgname=(dux-qt-base-git dux-qt-base-git-devel)
+          pkgname=dux-qt-base
           pkgver=0.0.0
           pkgrel=1
           pkgdesc="Quickshell runtime built as a shared library (libdux-qt-base.so)"
           arch=(x86_64)
           url="https://github.com/duxlabs-dev/dux-qt-base"
           license=(LGPL-3.0-only)
-          options=(!debug !lto)
+          options=(!debug !lto !docs !libtool !staticlibs strip)
 
           makedepends=(
             cmake
@@ -110,26 +109,27 @@ jobs:
           build() {
             cd "$srcdir/dux-qt-base"
 
-            _flags="-O3 -pipe -march=znver3 -mtune=znver3 -fno-plt -fno-semantic-interposition"
-            _ldflags="-flto=auto -Wl,-O1 -Wl,--as-needed"
+            # Zen 3 (Ryzen 5600GT): fast code, no debug info, dead code stripped
+            _flags="-O3 -g0 -pipe -march=znver3 -mtune=znver3 -fno-plt -fno-semantic-interposition -ffunction-sections -fdata-sections"
+            _ldflags="-flto=auto -Wl,-O1 -Wl,--as-needed -Wl,--gc-sections -Wl,--sort-common -Wl,--hash-style=gnu -Wl,-s"
 
             cmake -B build -G Ninja \
               -DCMAKE_BUILD_TYPE=Release \
               -DCMAKE_INSTALL_PREFIX=/usr \
               -DCMAKE_INSTALL_LIBDIR=lib \
-              -DDISTRIBUTOR="GitHub Actions (dux-qt-base-git)" \
+              -DDISTRIBUTOR="GitHub Actions (dux-qt-base)" \
               -DGIT_REVISION="$(git rev-parse HEAD)" \
               -DCMAKE_C_FLAGS="$_flags" \
               -DCMAKE_CXX_FLAGS="$_flags" \
-              -DCMAKE_C_FLAGS_RELEASE="-O3 -DNDEBUG" \
-              -DCMAKE_CXX_FLAGS_RELEASE="-O3 -DNDEBUG" \
+              -DCMAKE_C_FLAGS_RELEASE="-O3 -g0 -DNDEBUG" \
+              -DCMAKE_CXX_FLAGS_RELEASE="-O3 -g0 -DNDEBUG" \
               -DCMAKE_SHARED_LINKER_FLAGS="$_ldflags" \
               -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON
 
             cmake --build build --parallel "$(nproc)"
           }
 
-          package_dux-qt-base-git() {
+          package() {
             depends=(
               gcc-libs
               glibc
@@ -148,8 +148,9 @@ jobs:
               wayland
             )
             optdepends=('qt6-svg: svg images and icons')
-            provides=(dux-qt-base libdux-qt-base.so)
-            conflicts=(dux-qt-base)
+            provides=(libdux-qt-base.so)
+            conflicts=(dux-qt-base-git dux-qt-base-git-devel dux-qt-base-bin)
+            replaces=(dux-qt-base-git dux-qt-base-git-devel)
 
             cd "$srcdir/dux-qt-base"
             DESTDIR="$pkgdir" cmake --install build
@@ -158,22 +159,6 @@ jobs:
             rm -rf "$pkgdir/usr/include" "$pkgdir/usr/lib/pkgconfig"
             rm -f "$pkgdir/usr/lib/libdux-qt-base.so"
           }
-
-          package_dux-qt-base-git-devel() {
-            pkgdesc+=" (development files)"
-            depends=("dux-qt-base-git=$pkgver-$pkgrel")
-            provides=(dux-qt-base-devel)
-            conflicts=(dux-qt-base-devel)
-
-            cd "$srcdir/dux-qt-base"
-            DESTDIR="$srcdir/stage" cmake --install build
-
-            # dev = .so symlink + .pc + header
-            install -d "$pkgdir/usr/lib/pkgconfig" "$pkgdir/usr/include"
-            cp -a "$srcdir/stage/usr/lib/libdux-qt-base.so" "$pkgdir/usr/lib/"
-            cp -a "$srcdir/stage/usr/lib/pkgconfig/dux-qt-base.pc" "$pkgdir/usr/lib/pkgconfig/"
-            cp -a "$srcdir/stage/usr/include/dux-qt-base" "$pkgdir/usr/include/"
-          }
           EOF
 
       # -------------------------
@@ -181,14 +166,16 @@ jobs:
       # -------------------------
       - name: Show build flags
         run: |
-          echo "yml-version: gcc-o3-znver3-lto-v4"
-          grep -nE 'march|FLAGS_RELEASE|INTERPROCEDURAL|clang' /home/builder/pkg/PKGBUILD || true
+          echo "yml-version: gcc-o3-znver3-lto-small-v7"
+          grep -nE 'march|FLAGS_RELEASE|INTERPROCEDURAL|options=' /home/builder/pkg/PKGBUILD || true
 
       # -------------------------
       # Build package
       # -------------------------
       - name: Build dux-qt-base packages
         run: |
+          # smallest possible package: zstd ultra compression
+          sed -i 's/^COMPRESSZST=.*/COMPRESSZST=(zstd -c -T0 --ultra -22 -)/' /etc/makepkg.conf
           chown -R builder:builder /home/builder
           su builder -c '
             export PACKAGER="Ravi Kishor <github@ravi>"
@@ -206,7 +193,7 @@ jobs:
           mkdir -p release
           cp /home/builder/pkg/*.pkg.tar.zst release/
 
-          RUNTIME_PKG=$(ls release/*.pkg.tar.zst | grep -v -- '-devel-' | head -n1)
+          RUNTIME_PKG=$(ls release/dux-qt-base-*.pkg.tar.zst | head -n1)
           VERSION=$(pacman -Qp "$RUNTIME_PKG" | awk '{print $2}')
 
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
@@ -221,13 +208,26 @@ jobs:
           path: release/*.pkg.tar.zst
 
       # -------------------------
+      # Remove old devel / -git assets from the release (if it exists)
+      # -------------------------
+      - name: Remove old assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ steps.pkg.outputs.version }}-znver3
+        run: |
+          gh release view "$TAG" --json assets -q '.assets[].name' 2>/dev/null \
+            | grep -E '^dux-qt-base-git|-devel-' \
+            | while read -r a; do gh release delete-asset "$TAG" "$a" -y; done || true
+
+      # -------------------------
       # GitHub Release
       # -------------------------
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.pkg.outputs.version }}-znver3
-          name: dux-qt-base-git ${{ steps.pkg.outputs.version }} (znver3)
+          name: dux-qt-base ${{ steps.pkg.outputs.version }} (znver3)
           files: release/*.pkg.tar.zst
           overwrite_files: true
           fail_on_unmatched_files: true
