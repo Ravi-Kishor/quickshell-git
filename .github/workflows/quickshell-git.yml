@@ -127,10 +127,7 @@ jobs:
               -DCMAKE_CXX_FLAGS_RELEASE="-O2 -DNDEBUG" \
               -DCMAKE_SHARED_LINKER_FLAGS="$_ldflags" \
               -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
-              -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON \
-              -DHYPRLAND=OFF \
-              -DI3=OFF \
-              -DX11=OFF
+              -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON
 
             cmake --build build --parallel "$(nproc)"
           }
@@ -187,7 +184,7 @@ jobs:
       # -------------------------
       - name: Show build flags
         run: |
-          echo "yml-version: pthread-pch-o2-v2"
+          echo "yml-version: pthread-pch-o2-v3-all-features"
           grep -nE 'pthread|PRECOMPILE|FLAGS_RELEASE' /home/builder/pkg/PKGBUILD
 
       # -------------------------
