@@ -35,7 +35,7 @@ jobs:
             spirv-tools wayland wayland-protocols \
             libdrm libxkbcommon libxcb libpipewire \
             mesa libglvnd vulkan-headers vulkan-icd-loader \
-            pam polkit glib2
+            pam polkit glib2 base-devel git go tar gzip coreutils findutils pipewire
 
       # -------------------------
       # Create builder
