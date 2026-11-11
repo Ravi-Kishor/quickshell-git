@@ -24,26 +24,13 @@ jobs:
           pacman -S --noconfirm base-devel git curl sudo
 
       # -------------------------
-      # Enable CachyOS repository
-      # -------------------------
-      - name: Setup CachyOS repo
-        run: |
-          pacman-key --init
-          curl -L https://mirror.cachyos.org/cachyos-repo.tar.xz -o repo.tar.xz
-          tar -xf repo.tar.xz
-          cd cachyos-repo
-          chmod +x cachyos-repo.sh
-          yes | ./cachyos-repo.sh
-          pacman -Syu --noconfirm
-
-      # -------------------------
       # Install dependencies
       # (cpptrace + jemalloc not needed: CRASH_HANDLER/USE_JEMALLOC default OFF)
       # -------------------------
       - name: Install dependencies
         run: |
           pacman -S --noconfirm --needed \
-            cmake ninja pkgconf clang cli11 \
+            cmake ninja pkgconf clang lld cli11 \
             qt6-base qt6-declarative qt6-svg qt6-wayland qt6-shadertools \
             spirv-tools wayland wayland-protocols \
             libdrm libxkbcommon libxcb libpipewire \
@@ -73,12 +60,14 @@ jobs:
           arch=(x86_64)
           url="https://github.com/duxlabs-dev/dux-qt-base"
           license=(LGPL-3.0-only)
+          options=(!debug !lto)
 
           makedepends=(
             cmake
             ninja
             pkgconf
             clang
+            lld
             cli11
             git
             qt6-base
@@ -105,14 +94,23 @@ jobs:
           build() {
             cd "$srcdir/dux-qt-base"
 
+            _flags="-pthread -O2 -pipe -march=znver3 -mtune=znver3 -ffunction-sections -fdata-sections -fvisibility-inlines-hidden"
+            _ldflags="-fuse-ld=lld -Wl,-O1 -Wl,--as-needed -Wl,--gc-sections"
+
             CC=clang CXX=clang++ cmake -B build -G Ninja \
               -DCMAKE_BUILD_TYPE=Release \
               -DCMAKE_INSTALL_PREFIX=/usr \
               -DCMAKE_INSTALL_LIBDIR=lib \
               -DDISTRIBUTOR="GitHub Actions (dux-qt-base-git)" \
               -DGIT_REVISION="$(git rev-parse HEAD)" \
-              -DCMAKE_C_FLAGS="-O3 -pipe -march=x86-64-v3" \
-              -DCMAKE_CXX_FLAGS="-O3 -pipe -march=x86-64-v3"
+              -DCMAKE_C_FLAGS="$_flags" \
+              -DCMAKE_CXX_FLAGS="$_flags" \
+              -DCMAKE_SHARED_LINKER_FLAGS="$_ldflags" \
+              -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
+              -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON \
+              -DHYPRLAND=OFF \
+              -DI3=OFF \
+              -DX11=OFF
 
             cmake --build build --parallel "$(nproc)"
           }
@@ -206,8 +204,8 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.pkg.outputs.version }}-v3
-          name: dux-qt-base-git ${{ steps.pkg.outputs.version }} (x86-64-v3)
+          tag_name: ${{ steps.pkg.outputs.version }}-znver3
+          name: dux-qt-base-git ${{ steps.pkg.outputs.version }} (znver3)
           files: release/*.pkg.tar.zst
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
