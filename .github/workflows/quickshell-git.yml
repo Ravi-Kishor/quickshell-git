@@ -1,12 +1,12 @@
-name: Build quickshell-git
+name: Build dux-qt-base-git
 
 permissions:
   contents: write
 
-#on:
-#  workflow_dispatch:
-#  schedule:
-#    - cron: "0 */23 * * *"
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 0 * * *"
 
 jobs:
   build:
@@ -38,14 +38,17 @@ jobs:
 
       # -------------------------
       # Install dependencies
+      # (cpptrace + jemalloc not needed: CRASH_HANDLER/USE_JEMALLOC default OFF)
       # -------------------------
       - name: Install dependencies
         run: |
-          pacman -S --noconfirm \
-            cmake ninja cli11 qt6-base qt6-declarative qt6-svg \
-            qt6-wayland qt6-shadertools spirv-tools wayland-protocols \
-            jemalloc libdrm libglvnd libpipewire libxcb mesa pam polkit \
-            vulkan-headers vulkan-icd-loader
+          pacman -S --noconfirm --needed \
+            cmake ninja pkgconf clang cli11 \
+            qt6-base qt6-declarative qt6-svg qt6-wayland qt6-shadertools \
+            spirv-tools wayland wayland-protocols \
+            libdrm libxkbcommon libxcb libpipewire \
+            mesa libglvnd vulkan-headers vulkan-icd-loader \
+            pam polkit glib2
 
       # -------------------------
       # Create builder
@@ -56,76 +59,42 @@ jobs:
           echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
 
       # -------------------------
-      # Build cpptrace
-      # -------------------------
-      - name: Build cpptrace (AUR)
-        run: |
-          chown -R builder:builder /home/builder
-          su builder -c '
-            export MAKEFLAGS="-j$(nproc)"
-            cd ~
-            git clone https://aur.archlinux.org/cpptrace.git
-            cd cpptrace
-            makepkg -s --noconfirm
-          '
-
-      - name: Install cpptrace
-        run: |
-          pacman -U --noconfirm /home/builder/cpptrace/*.pkg.tar.zst
-
-      # -------------------------
       # Generate PKGBUILD
       # -------------------------
-      - name: Create quickshell PKGBUILD
+      - name: Create dux-qt-base PKGBUILD
         run: |
-          cat > /home/builder/PKGBUILD <<'EOF'
-          pkgname=quickshell-git
+          mkdir -p /home/builder/pkg
+          cat > /home/builder/pkg/PKGBUILD <<'EOF'
+          pkgbase=dux-qt-base-git
+          pkgname=(dux-qt-base-git dux-qt-base-git-devel)
           pkgver=0.0.0
           pkgrel=1
-          pkgdesc="Flexible toolkit for making desktop shells with QtQuick"
+          pkgdesc="Quickshell runtime built as a shared library (libdux-qt-base.so)"
           arch=(x86_64)
-          url="https://git.outfoxxed.me/quickshell/quickshell"
+          url="https://github.com/duxlabs-dev/dux-qt-base"
           license=(LGPL-3.0-only)
 
-          provides=(quickshell quickshell-git)
-          conflicts=(quickshell)
-          replaces=(quickshell)
-
-          depends=(
-            cpptrace
-            gcc-libs
-            glibc
-            hicolor-icon-theme
-            jemalloc
-            libdrm
-            libglvnd
-            libpipewire
-            libxcb
-            mesa
-            pam
-            qt6-base
-            qt6-declarative
-            qt6-svg
-            qt6-wayland
-            wayland
-          )
-
           makedepends=(
-            cli11
             cmake
             ninja
+            pkgconf
+            clang
+            cli11
+            git
+            qt6-base
+            qt6-declarative
+            qt6-wayland
             qt6-shadertools
             spirv-tools
             wayland-protocols
-            git
             vulkan-headers
           )
 
-          source=("git+https://git.outfoxxed.me/quickshell/quickshell.git")
+          source=("dux-qt-base::git+https://github.com/duxlabs-dev/dux-qt-base.git#branch=master")
           sha256sums=('SKIP')
 
           pkgver() {
-            cd quickshell
+            cd "$srcdir/dux-qt-base"
             git describe --long --tags --abbrev=7 2>/dev/null \
               | sed 's/^v//;s/-/.r/;s/-/./' \
               || printf "r%s.%s" \
@@ -134,36 +103,77 @@ jobs:
           }
 
           build() {
-            cd quickshell
+            cd "$srcdir/dux-qt-base"
 
-            cmake -B build -G Ninja \
+            CC=clang CXX=clang++ cmake -B build -G Ninja \
               -DCMAKE_BUILD_TYPE=Release \
               -DCMAKE_INSTALL_PREFIX=/usr \
-              -DINSTALL_QML_PREFIX=lib/qt6/qml \
+              -DCMAKE_INSTALL_LIBDIR=lib \
+              -DDISTRIBUTOR="GitHub Actions (dux-qt-base-git)" \
+              -DGIT_REVISION="$(git rev-parse HEAD)" \
               -DCMAKE_C_FLAGS="-O3 -pipe -march=x86-64-v3" \
-              -DCMAKE_CXX_FLAGS="-O3 -pipe -march=x86-64-v3" \
-              -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON
+              -DCMAKE_CXX_FLAGS="-O3 -pipe -march=x86-64-v3"
 
-            cmake --build build --parallel $(nproc)
+            cmake --build build --parallel "$(nproc)"
           }
 
-          package() {
-            cd quickshell
+          package_dux-qt-base-git() {
+            depends=(
+              gcc-libs
+              glibc
+              libdrm
+              libxkbcommon
+              libxcb
+              libpipewire
+              libglvnd
+              mesa
+              pam
+              polkit
+              glib2
+              qt6-base
+              qt6-declarative
+              qt6-wayland
+              wayland
+            )
+            optdepends=('qt6-svg: svg images and icons')
+            provides=(dux-qt-base libdux-qt-base.so)
+            conflicts=(dux-qt-base)
+
+            cd "$srcdir/dux-qt-base"
             DESTDIR="$pkgdir" cmake --install build
+
+            # runtime = .so.0 + .so.<version> only
+            rm -rf "$pkgdir/usr/include" "$pkgdir/usr/lib/pkgconfig"
+            rm -f "$pkgdir/usr/lib/libdux-qt-base.so"
+          }
+
+          package_dux-qt-base-git-devel() {
+            pkgdesc+=" (development files)"
+            depends=("dux-qt-base-git=$pkgver-$pkgrel")
+            provides=(dux-qt-base-devel)
+            conflicts=(dux-qt-base-devel)
+
+            cd "$srcdir/dux-qt-base"
+            DESTDIR="$srcdir/stage" cmake --install build
+
+            # dev = .so symlink + .pc + header
+            install -d "$pkgdir/usr/lib/pkgconfig" "$pkgdir/usr/include"
+            cp -a "$srcdir/stage/usr/lib/libdux-qt-base.so" "$pkgdir/usr/lib/"
+            cp -a "$srcdir/stage/usr/lib/pkgconfig/dux-qt-base.pc" "$pkgdir/usr/lib/pkgconfig/"
+            cp -a "$srcdir/stage/usr/include/dux-qt-base" "$pkgdir/usr/include/"
           }
           EOF
 
       # -------------------------
       # Build package
       # -------------------------
-      - name: Build quickshell package
+      - name: Build dux-qt-base packages
         run: |
           chown -R builder:builder /home/builder
           su builder -c '
             export PACKAGER="Ravi Kishor <github@ravi>"
-            export DISTRIBUTOR="Ravi Kishor"
             export MAKEFLAGS="-j$(nproc)"
-            cd ~
+            cd ~/pkg
             makepkg -s --noconfirm
           '
 
@@ -174,12 +184,10 @@ jobs:
         id: pkg
         run: |
           mkdir -p release
+          cp /home/builder/pkg/*.pkg.tar.zst release/
 
-          cp /home/builder/cpptrace/*.pkg.tar.zst release/
-          cp /home/builder/quickshell-git-*.pkg.tar.zst release/
-
-          VERSION=$(basename /home/builder/quickshell-git-*.pkg.tar.zst \
-            | sed -E 's/^quickshell-git-(.*)-x86_64\.pkg\.tar\.zst/\1/')
+          RUNTIME_PKG=$(ls release/*.pkg.tar.zst | grep -v -- '-devel-' | head -n1)
+          VERSION=$(pacman -Qp "$RUNTIME_PKG" | awk '{print $2}')
 
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
@@ -189,7 +197,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: quickshell-release
+          name: dux-qt-base-release
           path: release/*.pkg.tar.zst
 
       # -------------------------
@@ -199,7 +207,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.pkg.outputs.version }}-v3
-          name: quickshell-git ${{ steps.pkg.outputs.version }} (x86-64-v3)
+          name: dux-qt-base-git ${{ steps.pkg.outputs.version }} (x86-64-v3)
           files: release/*.pkg.tar.zst
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
