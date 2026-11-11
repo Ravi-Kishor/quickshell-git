@@ -183,6 +183,14 @@ jobs:
           EOF
 
       # -------------------------
+      # Show effective flags (proves this yml version is the one running)
+      # -------------------------
+      - name: Show build flags
+        run: |
+          echo "yml-version: pthread-pch-o2-v2"
+          grep -nE 'pthread|PRECOMPILE|FLAGS_RELEASE' /home/builder/pkg/PKGBUILD
+
+      # -------------------------
       # Build package
       # -------------------------
       - name: Build dux-qt-base packages
