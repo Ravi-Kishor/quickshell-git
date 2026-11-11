@@ -34,7 +34,7 @@ jobs:
       - name: Install dependencies
         run: |
           pacman -S --noconfirm --needed \
-            cmake ninja pkgconf clang lld cli11 \
+            cmake ninja pkgconf cli11 \
             qt6-base qt6-declarative qt6-svg qt6-wayland qt6-shadertools \
             spirv-tools wayland wayland-protocols \
             libdrm libxkbcommon libxcb libpipewire \
@@ -70,8 +70,6 @@ jobs:
             cmake
             ninja
             pkgconf
-            clang
-            lld
             cli11
             git
             qt6-base
@@ -112,10 +110,10 @@ jobs:
           build() {
             cd "$srcdir/dux-qt-base"
 
-            _flags="-pthread -O2 -pipe -march=znver3 -mtune=znver3 -ffunction-sections -fdata-sections -fvisibility-inlines-hidden"
-            _ldflags="-fuse-ld=lld -Wl,-O1 -Wl,--as-needed -Wl,--gc-sections"
+            _flags="-O3 -pipe -march=znver3 -mtune=znver3 -fno-plt -fno-semantic-interposition"
+            _ldflags="-flto=auto -Wl,-O1 -Wl,--as-needed"
 
-            CC=clang CXX=clang++ cmake -B build -G Ninja \
+            cmake -B build -G Ninja \
               -DCMAKE_BUILD_TYPE=Release \
               -DCMAKE_INSTALL_PREFIX=/usr \
               -DCMAKE_INSTALL_LIBDIR=lib \
@@ -123,11 +121,10 @@ jobs:
               -DGIT_REVISION="$(git rev-parse HEAD)" \
               -DCMAKE_C_FLAGS="$_flags" \
               -DCMAKE_CXX_FLAGS="$_flags" \
-              -DCMAKE_C_FLAGS_RELEASE="-O2 -DNDEBUG" \
-              -DCMAKE_CXX_FLAGS_RELEASE="-O2 -DNDEBUG" \
+              -DCMAKE_C_FLAGS_RELEASE="-O3 -DNDEBUG" \
+              -DCMAKE_CXX_FLAGS_RELEASE="-O3 -DNDEBUG" \
               -DCMAKE_SHARED_LINKER_FLAGS="$_ldflags" \
-              -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
-              -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON
+              -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON
 
             cmake --build build --parallel "$(nproc)"
           }
@@ -184,8 +181,8 @@ jobs:
       # -------------------------
       - name: Show build flags
         run: |
-          echo "yml-version: pthread-pch-o2-v3-all-features"
-          grep -nE 'pthread|PRECOMPILE|FLAGS_RELEASE' /home/builder/pkg/PKGBUILD
+          echo "yml-version: gcc-o3-znver3-lto-v4"
+          grep -nE 'march|FLAGS_RELEASE|INTERPROCEDURAL|clang' /home/builder/pkg/PKGBUILD || true
 
       # -------------------------
       # Build package
