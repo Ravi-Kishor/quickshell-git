@@ -8,6 +8,10 @@ on:
   schedule:
     - cron: "0 0 * * *"
 
+concurrency:
+  group: dux-qt-base-release
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -35,7 +39,7 @@ jobs:
             spirv-tools wayland wayland-protocols \
             libdrm libxkbcommon libxcb libpipewire \
             mesa libglvnd vulkan-headers vulkan-icd-loader \
-            pam polkit glib2
+            pam polkit glib2 base-devel git go tar gzip coreutils findutils pipewire
 
       # -------------------------
       # Create builder
@@ -74,9 +78,20 @@ jobs:
             qt6-declarative
             qt6-wayland
             qt6-shadertools
+            qt6-svg
             spirv-tools
+            wayland
             wayland-protocols
             vulkan-headers
+            libdrm
+            libxkbcommon
+            libxcb
+            libpipewire
+            mesa
+            libglvnd
+            pam
+            polkit
+            glib2
           )
 
           source=("dux-qt-base::git+https://github.com/duxlabs-dev/dux-qt-base.git#branch=master")
@@ -84,17 +99,20 @@ jobs:
 
           pkgver() {
             cd "$srcdir/dux-qt-base"
-            git describe --long --tags --abbrev=7 2>/dev/null \
-              | sed 's/^v//;s/-/.r/;s/-/./' \
-              || printf "r%s.%s" \
-              "$(git rev-list --count HEAD)" \
-              "$(git rev-parse --short=7 HEAD)"
+            if git describe --long --tags --abbrev=7 >/dev/null 2>&1; then
+              git describe --long --tags --abbrev=7 \
+                | sed 's/^v//;s/-/.r/;s/-/./'
+            else
+              printf "r%s.%s" \
+                "$(git rev-list --count HEAD)" \
+                "$(git rev-parse --short=7 HEAD)"
+            fi
           }
 
           build() {
             cd "$srcdir/dux-qt-base"
 
-            _flags="-O2 -pipe -march=znver3 -mtune=znver3 -ffunction-sections -fdata-sections -fvisibility-inlines-hidden"
+            _flags="-pthread -O2 -pipe -march=znver3 -mtune=znver3 -ffunction-sections -fdata-sections -fvisibility-inlines-hidden"
             _ldflags="-fuse-ld=lld -Wl,-O1 -Wl,--as-needed -Wl,--gc-sections"
 
             CC=clang CXX=clang++ cmake -B build -G Ninja \
@@ -105,8 +123,11 @@ jobs:
               -DGIT_REVISION="$(git rev-parse HEAD)" \
               -DCMAKE_C_FLAGS="$_flags" \
               -DCMAKE_CXX_FLAGS="$_flags" \
+              -DCMAKE_C_FLAGS_RELEASE="-O2 -DNDEBUG" \
+              -DCMAKE_CXX_FLAGS_RELEASE="-O2 -DNDEBUG" \
               -DCMAKE_SHARED_LINKER_FLAGS="$_ldflags" \
               -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
+              -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON \
               -DHYPRLAND=OFF \
               -DI3=OFF \
               -DX11=OFF
@@ -162,6 +183,14 @@ jobs:
           EOF
 
       # -------------------------
+      # Show effective flags (proves this yml version is the one running)
+      # -------------------------
+      - name: Show build flags
+        run: |
+          echo "yml-version: pthread-pch-o2-v2"
+          grep -nE 'pthread|PRECOMPILE|FLAGS_RELEASE' /home/builder/pkg/PKGBUILD
+
+      # -------------------------
       # Build package
       # -------------------------
       - name: Build dux-qt-base packages
@@ -206,5 +235,7 @@ jobs:
           tag_name: ${{ steps.pkg.outputs.version }}-znver3
           name: dux-qt-base-git ${{ steps.pkg.outputs.version }} (znver3)
           files: release/*.pkg.tar.zst
+          overwrite_files: true
+          fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
