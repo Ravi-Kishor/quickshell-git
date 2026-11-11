@@ -74,9 +74,20 @@ jobs:
             qt6-declarative
             qt6-wayland
             qt6-shadertools
+            qt6-svg
             spirv-tools
+            wayland
             wayland-protocols
             vulkan-headers
+            libdrm
+            libxkbcommon
+            libxcb
+            libpipewire
+            mesa
+            libglvnd
+            pam
+            polkit
+            glib2
           )
 
           source=("dux-qt-base::git+https://github.com/duxlabs-dev/dux-qt-base.git#branch=master")
@@ -84,11 +95,14 @@ jobs:
 
           pkgver() {
             cd "$srcdir/dux-qt-base"
-            git describe --long --tags --abbrev=7 2>/dev/null \
-              | sed 's/^v//;s/-/.r/;s/-/./' \
-              || printf "r%s.%s" \
-              "$(git rev-list --count HEAD)" \
-              "$(git rev-parse --short=7 HEAD)"
+            if git describe --long --tags --abbrev=7 >/dev/null 2>&1; then
+              git describe --long --tags --abbrev=7 \
+                | sed 's/^v//;s/-/.r/;s/-/./'
+            else
+              printf "r%s.%s" \
+                "$(git rev-list --count HEAD)" \
+                "$(git rev-parse --short=7 HEAD)"
+            fi
           }
 
           build() {
@@ -105,6 +119,8 @@ jobs:
               -DGIT_REVISION="$(git rev-parse HEAD)" \
               -DCMAKE_C_FLAGS="$_flags" \
               -DCMAKE_CXX_FLAGS="$_flags" \
+              -DCMAKE_C_FLAGS_RELEASE="-O2 -DNDEBUG" \
+              -DCMAKE_CXX_FLAGS_RELEASE="-O2 -DNDEBUG" \
               -DCMAKE_SHARED_LINKER_FLAGS="$_ldflags" \
               -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
               -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON \
