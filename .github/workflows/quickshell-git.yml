@@ -47,7 +47,6 @@ jobs:
           SHORT="${COMMIT:0:7}"
           SKIP=false
 
-          # Check if any existing release tag already contains this 7-char short commit
           if [[ "$FORCE" != "true" ]] && \
              gh release list --repo "$GITHUB_REPOSITORY" --limit 20 --json tagName -q '.[].tagName' \
              | grep -q "${SHORT}-znver3"; then
@@ -102,7 +101,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Shallow blobless clone pinned to exact resolved commit
           git clone --filter=blob:none --no-checkout "$UPSTREAM_REPO" /home/builder/pkg/src/dux-qt-base
           git -C /home/builder/pkg/src/dux-qt-base checkout --detach "$UPSTREAM_COMMIT"
           git -C /home/builder/pkg/src/dux-qt-base submodule update --init --recursive --depth 1
@@ -139,13 +137,13 @@ jobs:
             # Ryzen 5 5600GT (Zen 3 / Cezanne) tuned flags:
             # - -fno-math-errno -fno-trapping-math: clean AVX2/FMA vectorization for QML layout/animations
             # - -fdevirtualize-at-ltrans -fno-semantic-interposition: devirtualize Qt C++ calls across LTO units
-            # - -fno-fat-lto-objects: faster compilation, emits LTO bytecode only
-            _flags="-O3 -g0 -pipe -march=znver3 -mtune=znver3 -flto=auto -fno-fat-lto-objects \
+            # - -Wl,-z,pack-relative-relocs: GNU ld flag for RELR packed dynamic relocations
+            _flags="-O3 -g0 -pipe -march=znver3 -mtune=znver3 \
               -fno-plt -fno-semantic-interposition -fdevirtualize-at-ltrans \
               -fno-math-errno -fno-trapping-math -ffunction-sections -fdata-sections"
 
             _ldflags="-flto=auto -Wl,-O1 -Wl,--as-needed -Wl,--gc-sections -Wl,--sort-common \
-              -Wl,--hash-style=gnu -Wl,-Bsymbolic-functions -Wl,--pack-dyn-relocs=relr \
+              -Wl,--hash-style=gnu -Wl,-Bsymbolic-functions -Wl,-z,pack-relative-relocs \
               -Wl,-z,relro -Wl,-z,now -Wl,-s"
 
             cmake -B build -G Ninja \
@@ -190,7 +188,7 @@ jobs:
       - name: Show build flags
         shell: bash
         run: |
-          echo "yml-version: gcc-o3-znver3-lto-5600gt-v8"
+          echo "yml-version: gcc-o3-znver3-lto-5600gt-v9"
           grep -nE 'march|FLAGS_RELEASE|INTERPROCEDURAL|options=' /home/builder/pkg/PKGBUILD || true
 
       - name: Build dux-qt-base package
@@ -222,7 +220,6 @@ jobs:
           RUNTIME_PKG="$(ls release/dux-qt-base-*.pkg.tar.zst | head -n1)"
           VERSION="$(pacman -Qp "$RUNTIME_PKG" | awk '{print $2}')"
 
-          # Verify RELR & dynamic library properties
           bsdtar -tf "$RUNTIME_PKG" | grep -E 'libdux-qt-base\.so'
           sha256sum "$RUNTIME_PKG" > "${RUNTIME_PKG}.sha256"
 
