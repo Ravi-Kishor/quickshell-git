@@ -1,60 +1,112 @@
-name: Build dux-qt-base
-
-permissions:
-  contents: write
+name: Build dux-qt-base - Zen 3
 
 on:
   workflow_dispatch:
+    inputs:
+      force:
+        description: "Rebuild even if a release for the current upstream commit exists"
+        type: boolean
+        default: false
   schedule:
     - cron: "0 */6 * * *"
+
+permissions:
+  contents: write
 
 concurrency:
   group: dux-qt-base-release
   cancel-in-progress: false
 
+env:
+  UPSTREAM_REPO: https://github.com/duxlabs-dev/dux-qt-base.git
+
 jobs:
+  check:
+    name: Resolve upstream and skip if already released
+    runs-on: ubuntu-latest
+    outputs:
+      commit: ${{ steps.resolve.outputs.commit }}
+      short: ${{ steps.resolve.outputs.short }}
+      skip: ${{ steps.resolve.outputs.skip }}
+    steps:
+      - name: Resolve upstream HEAD and check for existing release
+        id: resolve
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+
+          COMMIT="$(git ls-remote "$UPSTREAM_REPO" refs/heads/master | awk '{print $1}')"
+          [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "ERROR: could not resolve upstream master HEAD"
+            exit 1
+          }
+
+          SHORT="${COMMIT:0:7}"
+          SKIP=false
+
+          # Check if any existing release tag already contains this 7-char short commit
+          if [[ "$FORCE" != "true" ]] && \
+             gh release list --repo "$GITHUB_REPOSITORY" --limit 20 --json tagName -q '.[].tagName' \
+             | grep -q "${SHORT}-znver3"; then
+            SKIP=true
+          fi
+
+          {
+            echo "commit=$COMMIT"
+            echo "short=$SHORT"
+            echo "skip=$SKIP"
+          } >> "$GITHUB_OUTPUT"
+          echo "Upstream: $COMMIT ($SHORT) | Skip: $SKIP"
+
   build:
+    name: Build dux-qt-base (znver3)
+    needs: check
+    if: needs.check.outputs.skip != 'true'
     runs-on: ubuntu-latest
     container:
       image: archlinux:latest
+    env:
+      UPSTREAM_COMMIT: ${{ needs.check.outputs.commit }}
 
     steps:
-      # -------------------------
-      # Update system
-      # -------------------------
-      - name: Update system
+      - name: Update system and install dependencies
+        shell: bash
         run: |
-          pacman -Syu --noconfirm
-          pacman -S --noconfirm base-devel git curl sudo github-cli zstd
-
-      # -------------------------
-      # Install dependencies
-      # (cpptrace + jemalloc not needed: CRASH_HANDLER/USE_JEMALLOC default OFF)
-      # -------------------------
-      - name: Install dependencies
-        run: |
-          pacman -S --noconfirm --needed \
+          set -euo pipefail
+          pacman -Syu --noconfirm --noprogressbar
+          pacman -S --noconfirm --needed --noprogressbar \
+            base-devel git curl sudo github-cli zstd ccache \
             cmake ninja pkgconf cli11 \
             qt6-base qt6-declarative qt6-svg qt6-wayland qt6-shadertools \
             spirv-tools wayland wayland-protocols \
-            libdrm libxkbcommon libxcb libpipewire \
+            libdrm libxkbcommon libxcb libpipewire pipewire \
             mesa libglvnd vulkan-headers vulkan-icd-loader \
-            pam polkit glib2 base-devel git go tar gzip coreutils findutils pipewire
+            pam polkit glib2
 
-      # -------------------------
-      # Create builder
-      # -------------------------
-      - name: Create builder user
-        run: |
           useradd -m builder
-          echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+          install -d -o builder -g builder /home/builder/pkg /home/builder/.cache/ccache
 
-      # -------------------------
-      # Generate PKGBUILD
-      # -------------------------
-      - name: Create dux-qt-base PKGBUILD
+      - name: Cache ccache for faster C++/Qt6 rebuilds
+        uses: actions/cache@v4
+        with:
+          path: /home/builder/.cache/ccache
+          key: dux-qt-base-ccache-znver3-${{ needs.check.outputs.commit }}
+          restore-keys: |
+            dux-qt-base-ccache-znver3-
+
+      - name: Pre-clone upstream and create PKGBUILD
+        shell: bash
         run: |
-          mkdir -p /home/builder/pkg
+          set -euo pipefail
+
+          # Shallow blobless clone pinned to exact resolved commit
+          git clone --filter=blob:none --no-checkout "$UPSTREAM_REPO" /home/builder/pkg/src/dux-qt-base
+          git -C /home/builder/pkg/src/dux-qt-base checkout --detach "$UPSTREAM_COMMIT"
+          git -C /home/builder/pkg/src/dux-qt-base submodule update --init --recursive --depth 1
+
           cat > /home/builder/pkg/PKGBUILD <<'EOF'
           pkgname=dux-qt-base
           pkgver=0.0.0
@@ -66,64 +118,50 @@ jobs:
           options=(!debug !lto !docs !libtool !staticlibs strip)
 
           makedepends=(
-            cmake
-            ninja
-            pkgconf
-            cli11
-            git
-            qt6-base
-            qt6-declarative
-            qt6-wayland
-            qt6-shadertools
-            qt6-svg
-            spirv-tools
-            wayland
-            wayland-protocols
-            vulkan-headers
-            libdrm
-            libxkbcommon
-            libxcb
-            libpipewire
-            mesa
-            libglvnd
-            pam
-            polkit
-            glib2
+            cmake ninja pkgconf cli11 git
+            qt6-base qt6-declarative qt6-wayland qt6-shadertools qt6-svg
+            spirv-tools wayland wayland-protocols vulkan-headers
+            libdrm libxkbcommon libxcb libpipewire mesa libglvnd pam polkit glib2
           )
-
-          source=("dux-qt-base::git+https://github.com/duxlabs-dev/dux-qt-base.git#branch=master")
-          sha256sums=('SKIP')
 
           pkgver() {
             cd "$srcdir/dux-qt-base"
             if git describe --long --tags --abbrev=7 >/dev/null 2>&1; then
-              git describe --long --tags --abbrev=7 \
-                | sed 's/^v//;s/-/.r/;s/-/./'
+              git describe --long --tags --abbrev=7 | sed 's/^v//;s/-/.r/;s/-/./'
             else
-              printf "r%s.%s" \
-                "$(git rev-list --count HEAD)" \
-                "$(git rev-parse --short=7 HEAD)"
+              printf "r%s.%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short=7 HEAD)"
             fi
           }
 
           build() {
             cd "$srcdir/dux-qt-base"
 
-            # Zen 3 (Ryzen 5600GT): fast code, no debug info, dead code stripped
-            _flags="-O3 -g0 -pipe -march=znver3 -mtune=znver3 -fno-plt -fno-semantic-interposition -ffunction-sections -fdata-sections"
-            _ldflags="-flto=auto -Wl,-O1 -Wl,--as-needed -Wl,--gc-sections -Wl,--sort-common -Wl,--hash-style=gnu -Wl,-s"
+            # Ryzen 5 5600GT (Zen 3 / Cezanne) tuned flags:
+            # - -fno-math-errno -fno-trapping-math: clean AVX2/FMA vectorization for QML layout/animations
+            # - -fdevirtualize-at-ltrans -fno-semantic-interposition: devirtualize Qt C++ calls across LTO units
+            # - -fno-fat-lto-objects: faster compilation, emits LTO bytecode only
+            _flags="-O3 -g0 -pipe -march=znver3 -mtune=znver3 -flto=auto -fno-fat-lto-objects \
+              -fno-plt -fno-semantic-interposition -fdevirtualize-at-ltrans \
+              -fno-math-errno -fno-trapping-math -ffunction-sections -fdata-sections"
+
+            _ldflags="-flto=auto -Wl,-O1 -Wl,--as-needed -Wl,--gc-sections -Wl,--sort-common \
+              -Wl,--hash-style=gnu -Wl,-Bsymbolic-functions -Wl,--pack-dyn-relocs=relr \
+              -Wl,-z,relro -Wl,-z,now -Wl,-s"
 
             cmake -B build -G Ninja \
               -DCMAKE_BUILD_TYPE=Release \
               -DCMAKE_INSTALL_PREFIX=/usr \
               -DCMAKE_INSTALL_LIBDIR=lib \
-              -DDISTRIBUTOR="GitHub Actions (dux-qt-base)" \
+              -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+              -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+              -DDISTRIBUTOR="GitHub Actions (dux-qt-base znver3)" \
               -DGIT_REVISION="$(git rev-parse HEAD)" \
               -DCMAKE_C_FLAGS="$_flags" \
               -DCMAKE_CXX_FLAGS="$_flags" \
               -DCMAKE_C_FLAGS_RELEASE="-O3 -g0 -DNDEBUG" \
               -DCMAKE_CXX_FLAGS_RELEASE="-O3 -g0 -DNDEBUG" \
               -DCMAKE_SHARED_LINKER_FLAGS="$_ldflags" \
+              -DCMAKE_EXE_LINKER_FLAGS="$_ldflags" \
               -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON
 
             cmake --build build --parallel "$(nproc)"
@@ -131,24 +169,12 @@ jobs:
 
           package() {
             depends=(
-              gcc-libs
-              glibc
-              libdrm
-              libxkbcommon
-              libxcb
-              libpipewire
-              libglvnd
-              mesa
-              pam
-              polkit
-              glib2
-              qt6-base
-              qt6-declarative
-              qt6-wayland
-              wayland
+              gcc-libs glibc libdrm libxkbcommon libxcb libpipewire
+              libglvnd mesa pam polkit glib2 qt6-base qt6-declarative
+              qt6-wayland wayland
             )
             optdepends=('qt6-svg: svg images and icons')
-            provides=(quickshell)
+            provides=(quickshell dux-qt-base)
             conflicts=(dux-qt-base-git dux-qt-base-git-devel dux-qt-base-bin)
             replaces=(dux-qt-base-git dux-qt-base-git-devel)
 
@@ -161,56 +187,49 @@ jobs:
           }
           EOF
 
-      # -------------------------
-      # Show effective flags (proves this yml version is the one running)
-      # -------------------------
       - name: Show build flags
+        shell: bash
         run: |
-          echo "yml-version: gcc-o3-znver3-lto-small-v7"
+          echo "yml-version: gcc-o3-znver3-lto-5600gt-v8"
           grep -nE 'march|FLAGS_RELEASE|INTERPROCEDURAL|options=' /home/builder/pkg/PKGBUILD || true
 
-      # -------------------------
-      # Build package
-      # -------------------------
-      - name: Build dux-qt-base packages
+      - name: Build dux-qt-base package
+        shell: bash
         run: |
-          # smallest possible package: zstd ultra compression
+          set -euo pipefail
           sed -i 's/^COMPRESSZST=.*/COMPRESSZST=(zstd -c -T0 --ultra -22 -)/' /etc/makepkg.conf
           chown -R builder:builder /home/builder
-          su builder -c '
+
+          su builder -s /bin/bash -c '
+            set -euo pipefail
             export PACKAGER="Ravi Kishor <github@ravi>"
             export MAKEFLAGS="-j$(nproc)"
+            export CCACHE_DIR="/home/builder/.cache/ccache"
+            export CCACHE_MAXSIZE="1G"
+            export CCACHE_SLOPPINESS="pch_defines,time_macros"
             cd ~/pkg
-            makepkg -s --noconfirm
+            makepkg --nodeps --noextract --clean --noconfirm
           '
 
-      # -------------------------
-      # Prepare release
-      # -------------------------
-      - name: Prepare release files
+      - name: Verify shared library and prepare release files
         id: pkg
+        shell: bash
         run: |
+          set -euo pipefail
           mkdir -p release
           cp /home/builder/pkg/*.pkg.tar.zst release/
 
-          RUNTIME_PKG=$(ls release/dux-qt-base-*.pkg.tar.zst | head -n1)
-          VERSION=$(pacman -Qp "$RUNTIME_PKG" | awk '{print $2}')
+          RUNTIME_PKG="$(ls release/dux-qt-base-*.pkg.tar.zst | head -n1)"
+          VERSION="$(pacman -Qp "$RUNTIME_PKG" | awk '{print $2}')"
+
+          # Verify RELR & dynamic library properties
+          bsdtar -tf "$RUNTIME_PKG" | grep -E 'libdux-qt-base\.so'
+          sha256sum "$RUNTIME_PKG" > "${RUNTIME_PKG}.sha256"
 
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      # -------------------------
-      # Upload artifact
-      # -------------------------
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: dux-qt-base-release
-          path: release/*.pkg.tar.zst
-
-      # -------------------------
-      # Remove old devel / -git assets from the release (if it exists)
-      # -------------------------
       - name: Remove old assets
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
@@ -220,16 +239,16 @@ jobs:
             | grep -E '^dux-qt-base-git|-devel-' \
             | while read -r a; do gh release delete-asset "$TAG" "$a" -y; done || true
 
-      # -------------------------
-      # GitHub Release
-      # -------------------------
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.pkg.outputs.version }}-znver3
           name: dux-qt-base ${{ steps.pkg.outputs.version }} (znver3)
-          files: release/*.pkg.tar.zst
+          files: |
+            release/*.pkg.tar.zst
+            release/*.sha256
           overwrite_files: true
           fail_on_unmatched_files: true
+          make_latest: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
