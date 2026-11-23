@@ -78,7 +78,7 @@ jobs:
           pacman -Syu --noconfirm --noprogressbar
           pacman -S --noconfirm --needed --noprogressbar \
             base-devel git curl sudo github-cli zstd ccache \
-            cmake ninja pkgconf cli11 \
+            cmake ninja pkgconf cli11 cpptrace \
             qt6-base qt6-declarative qt6-svg qt6-wayland qt6-shadertools \
             spirv-tools wayland wayland-protocols \
             libdrm libxkbcommon libxcb libpipewire pipewire \
@@ -116,7 +116,7 @@ jobs:
           options=(!debug !lto !docs !libtool !staticlibs strip)
 
           makedepends=(
-            cmake ninja pkgconf cli11 git
+            cmake ninja pkgconf cli11 cpptrace git
             qt6-base qt6-declarative qt6-wayland qt6-shadertools qt6-svg
             spirv-tools wayland wayland-protocols vulkan-headers
             libdrm libxkbcommon libxcb libpipewire mesa libglvnd pam polkit glib2
@@ -152,6 +152,7 @@ jobs:
               -DCMAKE_INSTALL_LIBDIR=lib \
               -DCMAKE_C_COMPILER_LAUNCHER=ccache \
               -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+              -DCRASH_HANDLER=ON \
               -DDISTRIBUTOR="GitHub Actions (dux-qt-base znver3)" \
               -DGIT_REVISION="$(git rev-parse HEAD)" \
               -DCMAKE_C_FLAGS="$_flags" \
@@ -167,7 +168,7 @@ jobs:
 
           package() {
             depends=(
-              gcc-libs glibc libdrm libxkbcommon libxcb libpipewire
+              cpptrace gcc-libs glibc libdrm libxkbcommon libxcb libpipewire
               libglvnd mesa pam polkit glib2 qt6-base qt6-declarative
               qt6-wayland wayland
             )
@@ -188,7 +189,7 @@ jobs:
       - name: Show build flags
         shell: bash
         run: |
-          echo "yml-version: gcc-o3-znver3-lto-5600gt-v9"
+          echo "yml-version: gcc-o3-znver3-lto-5600gt-v10"
           grep -nE 'march|FLAGS_RELEASE|INTERPROCEDURAL|options=' /home/builder/pkg/PKGBUILD || true
 
       - name: Build dux-qt-base package
