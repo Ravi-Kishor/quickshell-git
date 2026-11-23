@@ -19,7 +19,15 @@ jobs:
         run: |
           pacman-key --init
           pacman -Syu --noconfirm
-          pacman -S --noconfirm base-devel git sudo clang lld
+          pacman -S --noconfirm base-devel git sudo curl clang lld gawk
+
+      - name: Add CachyOS repositories
+        run: |
+          curl -fsSL https://mirror.cachyos.org/cachyos-repo.tar.xz -o /tmp/cachyos-repo.tar.xz
+          tar -xf /tmp/cachyos-repo.tar.xz -C /tmp
+          cd /tmp/cachyos-repo
+          yes | ./cachyos-repo.sh
+          pacman -Syu --noconfirm
 
       - name: Set parallel build and disable debug packages
         run: |
@@ -38,11 +46,6 @@ jobs:
         run: |
           useradd -m builder
           echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
-
-      - name: Verify cpptrace CMake files
-        run: |
-          pacman -Q cpptrace
-          pacman -Ql cpptrace | grep -i cmake
 
       - name: Create PKGBUILD
         run: |
@@ -90,8 +93,6 @@ jobs:
             export CXXFLAGS="$CFLAGS"
             export LDFLAGS="-Wl,-O1,--as-needed"
 
-            CPPTRACE_CMAKE_DIR=$(dirname "$(pacman -Ql cpptrace | grep -iE 'cpptrace-?config\.cmake' | awk '{print $2}' | head -n 1)")
-
             cmake -B build -G Ninja \
               -DCMAKE_BUILD_TYPE=Release \
               -DCMAKE_C_COMPILER=clang \
@@ -100,8 +101,7 @@ jobs:
               -DCMAKE_CXX_FLAGS="$CXXFLAGS" \
               -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON \
               -DCMAKE_INSTALL_PREFIX=/usr \
-              -DINSTALL_QML_PREFIX=lib/qt6/qml \
-              -Dcpptrace_DIR="$CPPTRACE_CMAKE_DIR"
+              -DINSTALL_QML_PREFIX=lib/qt6/qml
 
             cmake --build build -j$(nproc)
           }
