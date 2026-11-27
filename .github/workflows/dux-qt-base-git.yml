@@ -62,7 +62,7 @@ jobs:
           echo "Upstream: $COMMIT ($SHORT) | Skip: $SKIP"
 
   build:
-    name: Build dux-qt-base (znver3)
+    name: Build dux-qt-base (znver3 / Fat LTO)
     needs: check
     if: needs.check.outputs.skip != 'true'
     runs-on: ubuntu-latest
@@ -94,9 +94,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /home/builder/.cache/ccache
-          key: dux-qt-base-ccache-znver3-o2-${{ needs.check.outputs.commit }}
+          key: dux-qt-base-ccache-znver3-o2-fatlto-${{ needs.check.outputs.commit }}
           restore-keys: |
-            dux-qt-base-ccache-znver3-o2-
+            dux-qt-base-ccache-znver3-o2-fatlto-
 
       - name: Pre-clone upstream and create PKGBUILD
         shell: bash
@@ -118,7 +118,7 @@ jobs:
           pkgname=dux-qt-base
           pkgver=0.0.0
           pkgrel=1
-          pkgdesc="Quickshell runtime built as a shared library (libdux-qt-base.so, Zen 3 / 5600GT)"
+          pkgdesc="Quickshell runtime built as a shared library (libdux-qt-base.so, Zen 3 / 5600GT / Fat LTO)"
           arch=(x86_64)
           url="https://github.com/duxlabs-dev/dux-qt-base"
           license=(LGPL-3.0-only)
@@ -146,18 +146,22 @@ jobs:
             # Prevent Arch's default makepkg flags (including Intel CET -fcf-protection) from leaking in
             unset CFLAGS CXXFLAGS LDFLAGS
 
-            # Ryzen 5 5600GT (Zen 3 / Cezanne) tuned flags:
-            # - -O2 + LTO: keeps hot code inside 32KB L1i / 16MB L3 while enabling AVX2/FMA vectorization
-            # - -fdevirtualize-at-ltrans -fno-semantic-interposition: devirtualizes Qt C++ calls across LTO units
+            # Ryzen 5 5600GT (Zen 3 / Cezanne) + Monolithic ("Fat") GCC LTO:
+            # - -O2 + single-partition LTO (-flto-partition=one): full cross-TU inlining,
+            #   devirtualization, and dead-code removal while keeping hot code inside L1i/L3
+            # - -fno-fat-lto-objects: emits slim GIMPLE IR (faster compile & smaller ccache)
+            # - -fdevirtualize-at-ltrans -fno-semantic-interposition: devirtualizes Qt C++ calls across LTO
             # - -fvisibility-inlines-hidden: trims Qt template/inline exports from .dynsym
             # - -fcf-protection=none: avoids useless Intel CET endbr64 padding on Zen 3
             _cflags="-O2 -g0 -pipe -march=znver3 -mtune=znver3 -fcf-protection=none \
+              -flto -fno-fat-lto-objects \
               -fno-plt -fno-semantic-interposition -fdevirtualize-at-ltrans \
               -fno-math-errno -fno-trapping-math -ffunction-sections -fdata-sections"
 
             _cxxflags="${_cflags} -fvisibility-inlines-hidden"
 
-            _ldflags="-O2 -march=znver3 -mtune=znver3 -flto=auto -fdevirtualize-at-ltrans \
+            _ldflags="-O2 -march=znver3 -mtune=znver3 \
+              -flto -flto-partition=one -fdevirtualize-at-ltrans \
               -Wl,-O1 -Wl,--as-needed -Wl,--gc-sections -Wl,--sort-common \
               -Wl,--hash-style=gnu -Wl,-Bsymbolic-functions -Wl,-z,pack-relative-relocs \
               -Wl,-z,relro -Wl,-z,now -Wl,-s"
@@ -169,7 +173,7 @@ jobs:
               -DCMAKE_C_COMPILER_LAUNCHER=ccache \
               -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
               -DCRASH_HANDLER=OFF \
-              -DDISTRIBUTOR="GitHub Actions (dux-qt-base znver3)" \
+              -DDISTRIBUTOR="GitHub Actions (dux-qt-base znver3 fat-lto)" \
               -DGIT_REVISION="$(git rev-parse HEAD)" \
               -DCMAKE_C_FLAGS="$_cflags" \
               -DCMAKE_CXX_FLAGS="$_cxxflags" \
@@ -208,8 +212,8 @@ jobs:
       - name: Show build flags
         shell: bash
         run: |
-          echo "yml-version: gcc-o2-znver3-lto-5600gt-v11"
-          grep -nE 'march|FLAGS_RELEASE|INTERPROCEDURAL|CRASH_HANDLER|options=' /home/builder/pkg/PKGBUILD || true
+          echo "yml-version: gcc-o2-znver3-fatlto-5600gt-v12"
+          grep -nE 'march|flto|FLAGS_RELEASE|INTERPROCEDURAL|CRASH_HANDLER|options=' /home/builder/pkg/PKGBUILD || true
 
       - name: Build dux-qt-base package
         shell: bash
@@ -250,6 +254,11 @@ jobs:
 
           echo "ELF hardening & RELR relocations:"
           readelf -d "$SO_FILE" | grep -E 'RELR|BIND_NOW|SYMBOLIC' || true
+
+          if readelf -S "$SO_FILE" | grep -q '\.gnu\.lto_'; then
+            echo "ERROR: Unfinalized LTO sections leaked into shared library."
+            exit 1
+          fi
 
           echo "Zen 3 AVX2/FMA sample instructions:"
           (set +o pipefail; objdump -d "$SO_FILE" | grep -Em 3 'vfmadd|ymm' || true)
