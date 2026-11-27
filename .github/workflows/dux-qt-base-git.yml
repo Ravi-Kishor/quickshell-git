@@ -47,9 +47,10 @@ jobs:
           SHORT="${COMMIT:0:7}"
           SKIP=false
 
+          # Match both "<ver>.<short>-1-znver3" and "<ver>.<short>-znver3"
           if [[ "$FORCE" != "true" ]] && \
              gh release list --repo "$GITHUB_REPOSITORY" --limit 20 --json tagName -q '.[].tagName' \
-             | grep -q "${SHORT}-znver3"; then
+             | grep -Eq "${SHORT}(-[0-9]+)?-znver3"; then
             SKIP=true
           fi
 
@@ -75,10 +76,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          pacman -Sy --noconfirm --noprogressbar archlinux-keyring
           pacman -Syu --noconfirm --noprogressbar
           pacman -S --noconfirm --needed --noprogressbar \
             base-devel git curl sudo github-cli zstd ccache \
-            cmake ninja pkgconf cli11 cpptrace \
+            cmake ninja pkgconf cli11 \
             qt6-base qt6-declarative qt6-svg qt6-wayland qt6-shadertools \
             spirv-tools wayland wayland-protocols \
             libdrm libxkbcommon libxcb libpipewire pipewire \
@@ -92,9 +94,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /home/builder/.cache/ccache
-          key: dux-qt-base-ccache-znver3-${{ needs.check.outputs.commit }}
+          key: dux-qt-base-ccache-znver3-o2-${{ needs.check.outputs.commit }}
           restore-keys: |
-            dux-qt-base-ccache-znver3-
+            dux-qt-base-ccache-znver3-o2-
 
       - name: Pre-clone upstream and create PKGBUILD
         shell: bash
@@ -105,18 +107,25 @@ jobs:
           git -C /home/builder/pkg/src/dux-qt-base checkout --detach "$UPSTREAM_COMMIT"
           git -C /home/builder/pkg/src/dux-qt-base submodule update --init --recursive --depth 1
 
+          cat > /home/builder/.makepkg.conf <<'EOF'
+          PACKAGER="Ravi Kishor <github@ravi>"
+          MAKEFLAGS="-j$(nproc)"
+          COMPRESSZST=(zstd -c -T0 --ultra -20 -)
+          PKGEXT='.pkg.tar.zst'
+          EOF
+
           cat > /home/builder/pkg/PKGBUILD <<'EOF'
           pkgname=dux-qt-base
           pkgver=0.0.0
           pkgrel=1
-          pkgdesc="Quickshell runtime built as a shared library (libdux-qt-base.so)"
+          pkgdesc="Quickshell runtime built as a shared library (libdux-qt-base.so, Zen 3 / 5600GT)"
           arch=(x86_64)
           url="https://github.com/duxlabs-dev/dux-qt-base"
           license=(LGPL-3.0-only)
           options=(!debug !lto !docs !libtool !staticlibs strip)
 
           makedepends=(
-            cmake ninja pkgconf cli11 cpptrace git
+            cmake ninja pkgconf cli11 git
             qt6-base qt6-declarative qt6-wayland qt6-shadertools qt6-svg
             spirv-tools wayland wayland-protocols vulkan-headers
             libdrm libxkbcommon libxcb libpipewire mesa libglvnd pam polkit glib2
@@ -134,15 +143,22 @@ jobs:
           build() {
             cd "$srcdir/dux-qt-base"
 
+            # Prevent Arch's default makepkg flags (including Intel CET -fcf-protection) from leaking in
+            unset CFLAGS CXXFLAGS LDFLAGS
+
             # Ryzen 5 5600GT (Zen 3 / Cezanne) tuned flags:
-            # - -fno-math-errno -fno-trapping-math: clean AVX2/FMA vectorization for QML layout/animations
-            # - -fdevirtualize-at-ltrans -fno-semantic-interposition: devirtualize Qt C++ calls across LTO units
-            # - -Wl,-z,pack-relative-relocs: GNU ld flag for RELR packed dynamic relocations
-            _flags="-O3 -g0 -pipe -march=znver3 -mtune=znver3 \
+            # - -O2 + LTO: keeps hot code inside 32KB L1i / 16MB L3 while enabling AVX2/FMA vectorization
+            # - -fdevirtualize-at-ltrans -fno-semantic-interposition: devirtualizes Qt C++ calls across LTO units
+            # - -fvisibility-inlines-hidden: trims Qt template/inline exports from .dynsym
+            # - -fcf-protection=none: avoids useless Intel CET endbr64 padding on Zen 3
+            _cflags="-O2 -g0 -pipe -march=znver3 -mtune=znver3 -fcf-protection=none \
               -fno-plt -fno-semantic-interposition -fdevirtualize-at-ltrans \
               -fno-math-errno -fno-trapping-math -ffunction-sections -fdata-sections"
 
-            _ldflags="-flto=auto -Wl,-O1 -Wl,--as-needed -Wl,--gc-sections -Wl,--sort-common \
+            _cxxflags="${_cflags} -fvisibility-inlines-hidden"
+
+            _ldflags="-O2 -march=znver3 -mtune=znver3 -flto=auto -fdevirtualize-at-ltrans \
+              -Wl,-O1 -Wl,--as-needed -Wl,--gc-sections -Wl,--sort-common \
               -Wl,--hash-style=gnu -Wl,-Bsymbolic-functions -Wl,-z,pack-relative-relocs \
               -Wl,-z,relro -Wl,-z,now -Wl,-s"
 
@@ -152,14 +168,15 @@ jobs:
               -DCMAKE_INSTALL_LIBDIR=lib \
               -DCMAKE_C_COMPILER_LAUNCHER=ccache \
               -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-              -DCRASH_HANDLER=ON \
+              -DCRASH_HANDLER=OFF \
               -DDISTRIBUTOR="GitHub Actions (dux-qt-base znver3)" \
               -DGIT_REVISION="$(git rev-parse HEAD)" \
-              -DCMAKE_C_FLAGS="$_flags" \
-              -DCMAKE_CXX_FLAGS="$_flags" \
-              -DCMAKE_C_FLAGS_RELEASE="-O3 -g0 -DNDEBUG" \
-              -DCMAKE_CXX_FLAGS_RELEASE="-O3 -g0 -DNDEBUG" \
+              -DCMAKE_C_FLAGS="$_cflags" \
+              -DCMAKE_CXX_FLAGS="$_cxxflags" \
+              -DCMAKE_C_FLAGS_RELEASE="-DNDEBUG" \
+              -DCMAKE_CXX_FLAGS_RELEASE="-DNDEBUG" \
               -DCMAKE_SHARED_LINKER_FLAGS="$_ldflags" \
+              -DCMAKE_MODULE_LINKER_FLAGS="$_ldflags" \
               -DCMAKE_EXE_LINKER_FLAGS="$_ldflags" \
               -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON
 
@@ -168,7 +185,7 @@ jobs:
 
           package() {
             depends=(
-              cpptrace gcc-libs glibc libdrm libxkbcommon libxcb libpipewire
+              gcc-libs glibc libdrm libxkbcommon libxcb libpipewire
               libglvnd mesa pam polkit glib2 qt6-base qt6-declarative
               qt6-wayland wayland
             )
@@ -186,25 +203,23 @@ jobs:
           }
           EOF
 
+          chown -R builder:builder /home/builder
+
       - name: Show build flags
         shell: bash
         run: |
-          echo "yml-version: gcc-o3-znver3-lto-5600gt-v10"
-          grep -nE 'march|FLAGS_RELEASE|INTERPROCEDURAL|options=' /home/builder/pkg/PKGBUILD || true
+          echo "yml-version: gcc-o2-znver3-lto-5600gt-v11"
+          grep -nE 'march|FLAGS_RELEASE|INTERPROCEDURAL|CRASH_HANDLER|options=' /home/builder/pkg/PKGBUILD || true
 
       - name: Build dux-qt-base package
         shell: bash
         run: |
           set -euo pipefail
-          sed -i 's/^COMPRESSZST=.*/COMPRESSZST=(zstd -c -T0 --ultra -22 -)/' /etc/makepkg.conf
-          chown -R builder:builder /home/builder
-
-          su builder -s /bin/bash -c '
+          su - builder -c '
             set -euo pipefail
-            export PACKAGER="Ravi Kishor <github@ravi>"
-            export MAKEFLAGS="-j$(nproc)"
             export CCACHE_DIR="/home/builder/.cache/ccache"
             export CCACHE_MAXSIZE="1G"
+            export CCACHE_COMPILERCHECK="content"
             export CCACHE_SLOPPINESS="pch_defines,time_macros"
             cd ~/pkg
             makepkg --nodeps --noextract --clean --noconfirm
@@ -222,8 +237,24 @@ jobs:
           VERSION="$(pacman -Qp "$RUNTIME_PKG" | awk '{print $2}')"
 
           bsdtar -tf "$RUNTIME_PKG" | grep -E 'libdux-qt-base\.so'
-          sha256sum "$RUNTIME_PKG" > "${RUNTIME_PKG}.sha256"
 
+          VERIFY_DIR=/home/builder/verify
+          rm -rf "$VERIFY_DIR"
+          mkdir -p "$VERIFY_DIR"
+          bsdtar -xf "$RUNTIME_PKG" -C "$VERIFY_DIR"
+          SO_FILE="$(find "$VERIFY_DIR/usr/lib" -maxdepth 1 -type f -name 'libdux-qt-base.so.*' | head -n1)"
+          test -n "$SO_FILE"
+
+          echo "Library & package sizes:"
+          ls -lh "$SO_FILE" "$RUNTIME_PKG"
+
+          echo "ELF hardening & RELR relocations:"
+          readelf -d "$SO_FILE" | grep -E 'RELR|BIND_NOW|SYMBOLIC' || true
+
+          echo "Zen 3 AVX2/FMA sample instructions:"
+          (set +o pipefail; objdump -d "$SO_FILE" | grep -Em 3 'vfmadd|ymm' || true)
+
+          sha256sum "$RUNTIME_PKG" > "${RUNTIME_PKG}.sha256"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Remove old assets
@@ -238,7 +269,7 @@ jobs:
             | while read -r a; do gh release delete-asset "$TAG" "$a" -y; done || true
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.pkg.outputs.version }}-znver3
           name: dux-qt-base ${{ steps.pkg.outputs.version }} (znver3)
